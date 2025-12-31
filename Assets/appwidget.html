@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="ja">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>ToiletWidget</title>
+  <style>
+    :root {
+      --text: #0f172a;
+      --muted: #475569;
+      --ok: #16a34a;
+      --ng: #dc2626;
+      --unk: #64748b;
+    }
+
+    html,
+    body {
+      height: 100%;
+      margin: 0;
+      padding: 0
+    }
+
+    body {
+      background: transparent !important;
+      color: var(--text);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP", sans-serif;
+      overflow: hidden;
+    }
+
+    /* WPF側でカード化する前提：ここは“中身だけ” */
+    .root {
+      width: 300px;
+      height: 118px;
+      padding: 12px;
+      box-sizing: border-box;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 8px;
+      background: transparent;
+    }
+
+    .top {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      font-variant-numeric: tabular-nums;
+      gap: 10px;
+    }
+
+    .label {
+      font-weight: 900;
+      letter-spacing: .02em;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 210px;
+    }
+
+    .miniTime {
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .mid {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 0;
+    }
+
+    .dot {
+      width: 14px;
+      height: 14px;
+      border-radius: 999px;
+      background: var(--unk);
+      box-shadow: 0 0 0 10px rgba(100, 116, 139, .10);
+      flex: 0 0 auto;
+    }
+
+    .state {
+      font-size: 22px;
+      font-weight: 900;
+      letter-spacing: .04em;
+    }
+
+    .meta {
+      color: var(--muted);
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      white-space: nowrap;
+    }
+
+    .ok .dot {
+      background: var(--ok);
+      box-shadow: 0 0 0 10px rgba(22, 163, 74, .12)
+    }
+
+    .ng .dot {
+      background: var(--ng);
+      box-shadow: 0 0 0 10px rgba(220, 38, 38, .10)
+    }
+
+    .unk .dot {
+      background: var(--unk);
+      box-shadow: 0 0 0 10px rgba(100, 116, 139, .10)
+    }
+  </style>
+</head>
+
+<body>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+
+  <div class="root">
+    <div class="top">
+      <div class="label" id="title">🚹 横浜本社 男子トイレ</div>
+      <div class="miniTime" id="time">--:--</div>
+    </div>
+
+    <div class="mid unk" id="mid">
+      <div class="dot"></div>
+      <div class="state" id="state">状況確認中</div>
+    </div>
+
+    <div class="meta">
+      <div id="conn">接続: --</div>
+      <div id="updated">更新: --</div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const CONFIG = Object.freeze({
+        BASE_URL: "https://xs538392.xsrv.jp",
+        STATUS_PATH: "/toilet/status",
+        SOCKET_PATH: "/toilet/socket.io",
+        EVENT_NAME: "roomStatusUpdate",
+      });
+
+      const item = {
+        name: "横浜本社 男子トイレ",
+        state: "UNKNOWN",
+        last_enter_time: null,
+        last_leave_time: null,
+        updated_at: null
+      };
+
+      const titleEl = document.getElementById("title");
+      const stateEl = document.getElementById("state");
+      const midEl = document.getElementById("mid");
+      const connEl = document.getElementById("conn");
+      const updEl = document.getElementById("updated");
+
+      const pad = (n) => String(n).padStart(2, "0");
+      const nowHM = () => { const d = new Date(); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+
+      function setConn(text) { connEl.textContent = `接続: ${text}`; }
+
+      function label(state) {
+        const s = String(state || "").toUpperCase();
+        if (s === "VACANT") return "空いています";
+        if (s === "OCCUPIED") return "使用中";
+        return "状況確認中";
+      }
+
+      function cls(state) {
+        const s = String(state || "").toUpperCase();
+        if (s === "VACANT") return "ok";
+        if (s === "OCCUPIED") return "ng";
+        return "unk";
+      }
+
+      function render() {
+        titleEl.textContent = `🚹 ${item.name || "トイレ"}`;
+        stateEl.textContent = label(item.state);
+
+        midEl.classList.remove("ok", "ng", "unk");
+        midEl.classList.add(cls(item.state));
+
+        updEl.textContent = `更新: ${item.updated_at || nowHM()}`;
+      }
+
+      function applyIncoming(data) {
+        const status = data?.status;
+
+        item.name = data?.name ?? item.name;
+        item.last_enter_time = data?.lastCheckIn ?? item.last_enter_time;
+        item.last_leave_time = data?.lastCheckOut ?? item.last_leave_time;
+        item.updated_at = data?.updateTime ?? item.updated_at;
+
+        if (status === "free") item.state = "VACANT";
+        else if (status === "busy") item.state = "OCCUPIED";
+        else item.state = "UNKNOWN";
+
+        __notifyHostStatusChanged(status, item.name);
+        render();
+      }
+
+      async function fetchStatusOnce() {
+        const url = CONFIG.BASE_URL + CONFIG.STATUS_PATH;
+        const res = await fetch(url, { cache: "no-store" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        applyIncoming(data);
+      }
+
+      function connectSocket() {
+        setConn("WS接続中");
+        const socket = io(CONFIG.BASE_URL, { path: CONFIG.SOCKET_PATH });
+
+        socket.on("connect", () => setConn("WS"));
+        socket.on("disconnect", () => setConn("切断"));
+        socket.on("connect_error", (e) => { console.error(e); setConn("WSエラー"); });
+
+        socket.on(CONFIG.EVENT_NAME, (data) => {
+          applyIncoming(data);
+        });
+
+        return socket;
+      }
+
+      render();
+
+      (async () => {
+        try {
+          setConn("HTTP");
+          await fetchStatusOnce();
+        } catch (e) {
+          console.error(e);
+          setConn("HTTP失敗");
+        }
+      })();
+
+      connectSocket();
+
+      function tick() {
+        const d = new Date();
+        document.getElementById("time").textContent = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      }
+      tick(); setInterval(tick, 1000);
+    })();
+
+    // ===== Winapp bridge =====
+    let __lastStatus = null;
+
+    function __notifyHostStatusChanged(nextStatus, name) {
+      try {
+        if (__lastStatus === nextStatus) return;
+        __lastStatus = nextStatus;
+
+        if (window.chrome?.webview?.postMessage) {
+          window.chrome.webview.postMessage({
+            type: "status_changed",
+            status: nextStatus,
+            name: name || ""
+          });
+        }
+      } catch (e) { }
+    }
+  </script>
+</body>
+
+</html>

@@ -1,0 +1,25 @@
+# Build outputs
+bin/
+obj/
+**/bin/
+**/obj/
+
+# User-specific files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.vs/
+
+# Publish output (置いている場合)
+publish/
+**/publish/
+
+# Logs
+*.log
+
+# OS
+Thumbs.db
+.DS_Store
+
+memo.md
