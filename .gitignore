@@ -10,6 +10,7 @@ obj/
 *.userosscache
 *.sln.docstates
 .vs/
+*.sln
 
 # Publish output (置いている場合)
 publish/
